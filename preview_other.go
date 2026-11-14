@@ -14,7 +14,7 @@ import (
 
 func main() {
 	const S = 2
-	b := NewBuddy(S, 0, 0, 1920, 1040, true)
+	b := NewBuddy(S, []Area{{0, 0, 1920, 1040, true}}, -1, true)
 	c := &Canvas{W: canvasW * S, H: canvasH * S}
 	c.Pix = make([]byte, c.W*c.H*4)
 	out := "."

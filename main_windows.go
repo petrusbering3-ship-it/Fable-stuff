@@ -5,8 +5,11 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"runtime"
+	"sort"
+	"strconv"
 	"syscall"
 	"time"
 	"unsafe"
@@ -18,36 +21,40 @@ var (
 	kernel32 = syscall.NewLazyDLL("kernel32.dll")
 	advapi32 = syscall.NewLazyDLL("advapi32.dll")
 
-	pRegisterClassEx     = user32.NewProc("RegisterClassExW")
-	pCreateWindowEx      = user32.NewProc("CreateWindowExW")
-	pDefWindowProc       = user32.NewProc("DefWindowProcW")
-	pGetMessage          = user32.NewProc("GetMessageW")
-	pTranslateMessage    = user32.NewProc("TranslateMessage")
-	pDispatchMessage     = user32.NewProc("DispatchMessageW")
-	pPostQuitMessage     = user32.NewProc("PostQuitMessage")
-	pSetTimer            = user32.NewProc("SetTimer")
-	pUpdateLayeredWindow = user32.NewProc("UpdateLayeredWindow")
-	pGetDC               = user32.NewProc("GetDC")
-	pGetCursorPos        = user32.NewProc("GetCursorPos")
-	pSystemParametersInf = user32.NewProc("SystemParametersInfoW")
-	pGetLastInputInfo    = user32.NewProc("GetLastInputInfo")
-	pSetCapture          = user32.NewProc("SetCapture")
-	pReleaseCapture      = user32.NewProc("ReleaseCapture")
-	pCreatePopupMenu     = user32.NewProc("CreatePopupMenu")
-	pAppendMenu          = user32.NewProc("AppendMenuW")
-	pTrackPopupMenu      = user32.NewProc("TrackPopupMenu")
-	pDestroyMenu         = user32.NewProc("DestroyMenu")
-	pSetForegroundWindow = user32.NewProc("SetForegroundWindow")
-	pLoadCursor          = user32.NewProc("LoadCursorW")
-	pShowWindow          = user32.NewProc("ShowWindow")
-	pSetWindowPos        = user32.NewProc("SetWindowPos")
-	pSetProcessDPIAware  = user32.NewProc("SetProcessDPIAware")
-	pDestroyWindow       = user32.NewProc("DestroyWindow")
-	pGetForegroundWindow = user32.NewProc("GetForegroundWindow")
-	pGetShellWindow      = user32.NewProc("GetShellWindow")
-	pGetWindowRect       = user32.NewProc("GetWindowRect")
-	pGetSystemMetrics    = user32.NewProc("GetSystemMetrics")
-	pGetClassName        = user32.NewProc("GetClassNameW")
+	pRegisterClassEx      = user32.NewProc("RegisterClassExW")
+	pCreateWindowEx       = user32.NewProc("CreateWindowExW")
+	pDefWindowProc        = user32.NewProc("DefWindowProcW")
+	pGetMessage           = user32.NewProc("GetMessageW")
+	pTranslateMessage     = user32.NewProc("TranslateMessage")
+	pDispatchMessage      = user32.NewProc("DispatchMessageW")
+	pPostMessage          = user32.NewProc("PostMessageW")
+	pPostQuitMessage      = user32.NewProc("PostQuitMessage")
+	pSetTimer             = user32.NewProc("SetTimer")
+	pUpdateLayeredWindow  = user32.NewProc("UpdateLayeredWindow")
+	pGetDC                = user32.NewProc("GetDC")
+	pGetCursorPos         = user32.NewProc("GetCursorPos")
+	pGetLastInputInfo     = user32.NewProc("GetLastInputInfo")
+	pSetCapture           = user32.NewProc("SetCapture")
+	pReleaseCapture       = user32.NewProc("ReleaseCapture")
+	pCreatePopupMenu      = user32.NewProc("CreatePopupMenu")
+	pAppendMenu           = user32.NewProc("AppendMenuW")
+	pTrackPopupMenuEx     = user32.NewProc("TrackPopupMenuEx")
+	pDestroyMenu          = user32.NewProc("DestroyMenu")
+	pSetForegroundWindow  = user32.NewProc("SetForegroundWindow")
+	pLoadCursor           = user32.NewProc("LoadCursorW")
+	pShowWindow           = user32.NewProc("ShowWindow")
+	pSetWindowPos         = user32.NewProc("SetWindowPos")
+	pSetProcessDPIAware   = user32.NewProc("SetProcessDPIAware")
+	pSetDpiAwarenessCtx   = user32.NewProc("SetProcessDpiAwarenessContext")
+	pDestroyWindow        = user32.NewProc("DestroyWindow")
+	pGetForegroundWindow  = user32.NewProc("GetForegroundWindow")
+	pGetShellWindow       = user32.NewProc("GetShellWindow")
+	pGetWindowRect        = user32.NewProc("GetWindowRect")
+	pGetClassName         = user32.NewProc("GetClassNameW")
+	pEnumDisplayMonitors  = user32.NewProc("EnumDisplayMonitors")
+	pGetMonitorInfo       = user32.NewProc("GetMonitorInfoW")
+	pMonitorFromWindow    = user32.NewProc("MonitorFromWindow")
+	pSystemParametersInfo = user32.NewProc("SystemParametersInfoW")
 
 	pCreateCompatibleDC = gdi32.NewProc("CreateCompatibleDC")
 	pCreateDIBSection   = gdi32.NewProc("CreateDIBSection")
@@ -67,6 +74,12 @@ var (
 
 type point struct{ X, Y int32 }
 type rect struct{ L, T, R, B int32 }
+
+type monitorInfo struct {
+	Size          uint32
+	Monitor, Work rect
+	Flags         uint32
+}
 
 type wndClassEx struct {
 	Size                         uint32
@@ -109,7 +122,7 @@ const (
 	appKey  = `Software\FableBuddy`
 	appName = "FableBuddy"
 
-	idQuip, idJump, idSide, idStartup, idQuit = 1, 2, 3, 4, 5
+	idQuip, idJump, idSide, idStartup, idQuit, idScreen = 1, 2, 3, 4, 5, 100
 )
 
 func u16(s string) *uint16 { p, _ := syscall.UTF16PtrFromString(s); return p }
@@ -168,6 +181,33 @@ func setStartup(on bool) {
 	}
 }
 
+// ---- screens ----
+
+var (
+	found  []Area
+	enumCB = syscall.NewCallback(func(hmon, hdc, lprc, lp uintptr) uintptr {
+		mi := monitorInfo{Size: uint32(unsafe.Sizeof(monitorInfo{}))}
+		if r, _, _ := pGetMonitorInfo.Call(hmon, uintptr(unsafe.Pointer(&mi))); r != 0 {
+			w := mi.Work
+			found = append(found, Area{float64(w.L), float64(w.T), float64(w.R), float64(w.B), mi.Flags&1 != 0})
+		}
+		return 1
+	})
+)
+
+// screens returns the work area of every connected screen.
+func screens() []Area {
+	found = nil
+	pEnumDisplayMonitors.Call(0, 0, enumCB, 0)
+	if len(found) == 0 { // fall back to the main screen
+		var r rect
+		pSystemParametersInfo.Call(0x30, 0, uintptr(unsafe.Pointer(&r)), 0)
+		found = []Area{{float64(r.L), float64(r.T), float64(r.R), float64(r.B), true}}
+	}
+	sort.SliceStable(found, func(i, j int) bool { return found[i].L < found[j].L })
+	return found
+}
+
 // ---- app ----
 
 var (
@@ -176,34 +216,8 @@ var (
 	canvas                *Canvas
 	last                  time.Time
 	frame                 int
-	hidden                bool
+	hidden, menuOpen      bool
 )
-
-// fullscreenApp reports whether a game/video is covering the whole primary
-// screen, so the buddy can get out of the way.
-func fullscreenApp() bool {
-	fg, _, _ := pGetForegroundWindow.Call()
-	shell, _, _ := pGetShellWindow.Call()
-	if fg == 0 || fg == hwnd || fg == shell {
-		return false
-	}
-	var cls [64]uint16
-	pGetClassName.Call(fg, uintptr(unsafe.Pointer(&cls[0])), 64)
-	if n := syscall.UTF16ToString(cls[:]); n == "Progman" || n == "WorkerW" {
-		return false
-	}
-	var r rect
-	pGetWindowRect.Call(fg, uintptr(unsafe.Pointer(&r)))
-	w, _, _ := pGetSystemMetrics.Call(0)
-	h, _, _ := pGetSystemMetrics.Call(1)
-	return r.L <= 0 && r.T <= 0 && r.R >= int32(w) && r.B >= int32(h)
-}
-
-func workArea() (float64, float64, float64, float64) {
-	var r rect
-	pSystemParametersInf.Call(0x30, 0, uintptr(unsafe.Pointer(&r)), 0)
-	return float64(r.L), float64(r.T), float64(r.R), float64(r.B)
-}
 
 func cursor() (float64, float64) {
 	var p point
@@ -218,12 +232,40 @@ func userIdle() float64 {
 	return float64(uint32(now)-li.Time) / 1000
 }
 
+// fullscreenApp reports whether a game/video covers the whole screen the
+// buddy is on, so it can get out of the way. Other screens are unaffected.
+func fullscreenApp() bool {
+	fg, _, _ := pGetForegroundWindow.Call()
+	shell, _, _ := pGetShellWindow.Call()
+	if fg == 0 || fg == hwnd || fg == shell {
+		return false
+	}
+	var cls [64]uint16
+	pGetClassName.Call(fg, uintptr(unsafe.Pointer(&cls[0])), 64)
+	if n := syscall.UTF16ToString(cls[:]); n == "Progman" || n == "WorkerW" {
+		return false
+	}
+	var r rect
+	pGetWindowRect.Call(fg, uintptr(unsafe.Pointer(&r)))
+	mon, _, _ := pMonitorFromWindow.Call(fg, 2)
+	mi := monitorInfo{Size: uint32(unsafe.Sizeof(monitorInfo{}))}
+	if ok, _, _ := pGetMonitorInfo.Call(mon, uintptr(unsafe.Pointer(&mi))); ok == 0 {
+		return false
+	}
+	m := mi.Monitor
+	if r.L > m.L || r.T > m.T || r.R < m.R || r.B < m.B {
+		return false
+	}
+	x, y := int32(buddy.X), int32(buddy.Y-10)
+	return x >= m.L && x < m.R && y >= m.T && y < m.B
+}
+
 func tick() {
 	now := time.Now()
 	dt := now.Sub(last).Seconds()
 	last = now
-	if frame++; frame%60 == 0 {
-		buddy.SetArea(workArea())
+	if frame++; frame%60 == 0 && !menuOpen {
+		buddy.SetAreas(screens())
 		if fs := fullscreenApp(); fs != hidden && buddy.State != Drag {
 			hidden = fs
 			show := uintptr(4) // SW_SHOWNOACTIVATE
@@ -232,7 +274,8 @@ func tick() {
 			}
 			pShowWindow.Call(hwnd, show)
 		}
-		// stay above other windows without stealing focus
+		// stay above other windows without stealing focus (not while the
+		// menu is open, or we would cover it)
 		pSetWindowPos.Call(hwnd, ^uintptr(0), 0, 0, 0, 0, 0x0001|0x0002|0x0010)
 	}
 	cx, cy := cursor()
@@ -248,45 +291,85 @@ func tick() {
 }
 
 func menu() {
+	menuOpen, buddy.Paused = true, true
+	defer func() { menuOpen, buddy.Paused = false, false }()
+	buddy.Hush() // the speech bubble would sit where the menu opens
+
 	m, _, _ := pCreatePopupMenu.Call()
-	add := func(id uintptr, text string, checked bool) {
-		flags := uintptr(0)
-		if checked {
-			flags = 8
-		}
-		pAppendMenu.Call(m, flags, id, uintptr(unsafe.Pointer(u16(text))))
+	add := func(menu, id uintptr, text string, flags uintptr) {
+		pAppendMenu.Call(menu, flags, id, uintptr(unsafe.Pointer(u16(text))))
 	}
-	add(idQuip, "Say something", false)
-	add(idJump, "Jump!", false)
-	pAppendMenu.Call(m, 0x800, 0, 0)
+	const checked, grayed, popup, sep = 0x8, 0x1 | 0x2, 0x10, 0x800
+	add(m, idQuip, "Say something", 0)
+	add(m, idJump, "Jump!", 0)
+	add(m, 0, "", sep)
 	if buddy.HomeRight {
-		add(idSide, "Move to left corner", false)
+		add(m, idSide, "Move to left corner", 0)
 	} else {
-		add(idSide, "Move to right corner", false)
+		add(m, idSide, "Move to right corner", 0)
 	}
-	add(idStartup, "Start with Windows", startupEnabled())
-	pAppendMenu.Call(m, 0x800, 0, 0)
-	add(idQuit, "Quit", false)
+	n := len(buddy.Areas)
+	if n > 1 {
+		sub, _, _ := pCreatePopupMenu.Call()
+		for i := range buddy.Areas {
+			f := uintptr(0)
+			if i == buddy.HomeIdx() {
+				f = checked
+			}
+			add(sub, uintptr(idScreen+i), buddy.ScreenName(i), f)
+		}
+		add(m, sub, "Live on screen", popup)
+	}
+	label := "1 screen found"
+	if n > 1 {
+		label = fmt.Sprintf("%d screens found", n)
+	}
+	add(m, 0, label, grayed)
+	add(m, 0, "", sep)
+	sf := uintptr(0)
+	if startupEnabled() {
+		sf = checked
+	}
+	add(m, idStartup, "Start with Windows", sf)
+	add(m, 0, "", sep)
+	add(m, idQuit, "Quit", 0)
+
+	// Open the menu above the buddy's head and tell Windows never to put it
+	// over the buddy (it flips below/aside only if there is no room).
 	var p point
 	pGetCursorPos.Call(uintptr(unsafe.Pointer(&p)))
+	x0, y0, x1, y1 := buddy.BodyRect()
+	tp := struct {
+		Size    uint32
+		Exclude rect
+	}{20, rect{int32(x0), int32(y0), int32(x1), int32(y1)}}
+	const tpmCenter, tpmBottom, tpmVertical, tpmRightButton, tpmReturn = 0x4, 0x20, 0x40, 0x2, 0x100
 	pSetForegroundWindow.Call(hwnd)
-	cmd, _, _ := pTrackPopupMenu.Call(m, 0x0100|0x0002, uintptr(p.X), uintptr(p.Y), 0, hwnd, 0)
+	cmd, _, _ := pTrackPopupMenuEx.Call(m, tpmCenter|tpmBottom|tpmVertical|tpmRightButton|tpmReturn,
+		uintptr(p.X), uintptr(y0), hwnd, uintptr(unsafe.Pointer(&tp)))
+	pPostMessage.Call(hwnd, 0, 0, 0)
 	pDestroyMenu.Call(m)
-	switch cmd {
-	case idQuip:
+	switch {
+	case cmd == idQuip:
 		buddy.Quip()
-	case idJump:
+	case cmd == idJump:
 		buddy.Hop(650)
-	case idSide:
+	case cmd == idSide:
 		buddy.SetHome(!buddy.HomeRight)
 		if buddy.HomeRight {
 			regDel(appKey, "Left")
 		} else {
 			regSet(appKey, "Left", "1")
 		}
-	case idStartup:
+	case cmd >= idScreen && cmd < uintptr(idScreen+n):
+		i := int(cmd - idScreen)
+		if i != buddy.HomeIdx() {
+			buddy.SetHomeScreen(i)
+			regSet(appKey, "Screen", strconv.Itoa(i))
+		}
+	case cmd == idStartup:
 		setStartup(!startupEnabled())
-	case idQuit:
+	case cmd == idQuit:
 		pDestroyWindow.Call(hwnd)
 	}
 }
@@ -326,15 +409,25 @@ func main() {
 		setStartup(true)
 	}
 	_, left := regGet(appKey, "Left")
+	home := -1
+	if v, ok := regGet(appKey, "Screen"); ok {
+		if i, err := strconv.Atoi(v); err == nil {
+			home = i
+		}
+	}
 
-	pSetProcessDPIAware.Call()
+	// real pixel coordinates on every screen, even with mixed scaling
+	if pSetDpiAwarenessCtx.Find() == nil {
+		pSetDpiAwarenessCtx.Call(^uintptr(3)) // PER_MONITOR_AWARE_V2
+	} else {
+		pSetProcessDPIAware.Call()
+	}
 	screenDC, _, _ = pGetDC.Call(0)
 	dpi, _, _ := pGetDeviceCaps.Call(screenDC, 88)
 	scale := int((dpi + 48) / 96)
 	scale = max(1, min(4, scale))
 
-	l, t, r, b := workArea()
-	buddy = NewBuddy(scale, l, t, r, b, !left)
+	buddy = NewBuddy(scale, screens(), home, !left)
 	canvas = &Canvas{W: canvasW * scale, H: canvasH * scale}
 
 	memDC, _, _ = pCreateCompatibleDC.Call(screenDC)

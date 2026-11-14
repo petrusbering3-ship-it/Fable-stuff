@@ -22,8 +22,10 @@ Download `FableBuddy.exe` from the [latest release](../../releases/latest) and d
 | Drag and fling it | flies with real physics, bounces off the screen edges, then walks home |
 | Leave the PC for 2 minutes | tucks itself in with a blanket, pillows and an eye mask and snores small z's; wakes when you return |
 | Open a fullscreen game or video | hides until you leave fullscreen |
-| Wait | hops, strolls, and drops the occasional reminder; tells you when a new hour starts |
-| Right-click it | Say something · Jump! · switch corner · Start with Windows · Quit |
+| Wait | hops, strolls, and drops one of 70+ lines (reminders, fun facts, day-of-week and time-aware comments); tells you when a new hour starts |
+| Have 2+ screens | roams all of them: throw it from one screen to another, and it leaps back home in an arc. Now and then it visits your other screens by itself |
+| Plug in or remove a screen | notices, tells you, and moves to a screen that still exists |
+| Right-click it | Say something · Jump! · switch corner · **Live on screen** (pick any screen) · Start with Windows · Quit. The menu opens above it, never on top of it |
 
 ## How it's built
 
@@ -32,6 +34,7 @@ One dependency-free Go program (no cgo, no libraries):
 - `buddy.go` — simulation (physics, moods, particles) and a software renderer with its own pixel font
 - `main_windows.go` — Win32 shell: a per-pixel-alpha layered window, so there is no window frame and clicks pass through the transparent parts
 - `preview_other.go` — renders test frames to PNG on non-Windows machines
+- `buddy_test.go` — tests for multi-screen physics (side-by-side, stacked, gaps, unplugging) and that every phrase can be drawn; run `go test`
 
 Build it yourself: install [Go](https://go.dev/dl), then double-click `build.bat`. It builds `FableBuddy.exe` and starts it.
 

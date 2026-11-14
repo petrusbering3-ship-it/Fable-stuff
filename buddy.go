@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"sort"
 	"strings"
 	"time"
 )
@@ -81,7 +82,9 @@ var font = map[rune][5]uint8{
 	'8': {7, 5, 7, 5, 7}, '9': {7, 5, 7, 1, 6},
 	'.': {0, 0, 0, 0, 2}, ',': {0, 0, 0, 2, 4}, '!': {2, 2, 2, 0, 2}, '?': {6, 1, 2, 0, 2},
 	'\'': {2, 2, 0, 0, 0}, ':': {0, 2, 0, 2, 0}, '-': {0, 0, 7, 0, 0}, '*': {0, 5, 2, 5, 0},
-	'%': {5, 1, 2, 4, 5}, '+': {0, 2, 7, 2, 0},
+	'%': {5, 1, 2, 4, 5}, '+': {0, 2, 7, 2, 0}, '/': {1, 1, 2, 4, 4}, '(': {1, 2, 2, 2, 1},
+	')': {4, 2, 2, 2, 4}, '<': {1, 2, 4, 2, 1}, '>': {4, 2, 1, 2, 4}, '=': {0, 7, 0, 7, 0},
+	'"': {5, 5, 0, 0, 0},
 }
 
 func (c *Canvas) text(x, y, px int, s string, col uint32) {
@@ -155,8 +158,12 @@ type particle struct {
 }
 
 type Buddy struct {
-	S          int     // integer UI scale
-	L, T, R, B float64 // work area in screen pixels
+	S          int    // integer UI scale
+	Areas      []Area // work area of every screen, left to right
+	HomeScreen int    // index into Areas; -1 = main screen
+	Paused     bool   // e.g. while the right-click menu is open
+	leap       bool
+	leapArea   int
 	X, Y       float64 // feet centre in screen pixels
 	VX, VY     float64
 	State      int
@@ -175,42 +182,144 @@ type Buddy struct {
 	started                     time.Time
 }
 
-func NewBuddy(scale int, l, t, r, b float64, homeRight bool) *Buddy {
-	bd := &Buddy{S: scale, HomeRight: homeRight, blinkIn: 2, nextAct: 12, started: time.Now()}
-	bd.SetArea(l, t, r, b)
+// Area is the usable part of one screen (taskbar excluded), in screen pixels.
+type Area struct {
+	L, T, R, B float64
+	Primary    bool
+}
+
+func NewBuddy(scale int, areas []Area, homeScreen int, homeRight bool) *Buddy {
+	bd := &Buddy{S: scale, HomeRight: homeRight, HomeScreen: homeScreen, blinkIn: 2, nextAct: 12, started: time.Now()}
+	bd.SetAreas(areas)
+	a := bd.Areas[bd.HomeIdx()]
 	bd.X = bd.homeX()
-	bd.Y = t + (b-t)*0.55 // drop in from above
+	bd.Y = a.T + (a.B-a.T)*0.55 // drop in from above
 	bd.State = Air
 	bd.lastHour = time.Now().Hour()
-	h := time.Now().Hour()
-	switch {
-	case h < 5:
-		bd.Say("STILL UP? I'LL KEEP YOU COMPANY.")
-	case h < 12:
-		bd.Say("GOOD MORNING! LET'S BUILD SOMETHING.")
-	case h < 18:
-		bd.Say("GOOD AFTERNOON! I'M RIGHT HERE.")
-	default:
-		bd.Say("GOOD EVENING! NICE TO SEE YOU.")
-	}
+	bd.Say(pick(greetingLines(time.Now())))
 	return bd
 }
 
-func (b *Buddy) SetArea(l, t, r, bt float64) { b.L, b.T, b.R, b.B = l, t, r, bt }
+// SetAreas updates the screen layout (any number of screens, any arrangement).
+func (b *Buddy) SetAreas(as []Area) {
+	if len(as) == 0 {
+		return
+	}
+	as = append([]Area(nil), as...)
+	sort.SliceStable(as, func(i, j int) bool {
+		if as[i].L != as[j].L {
+			return as[i].L < as[j].L
+		}
+		return as[i].T < as[j].T
+	})
+	old := len(b.Areas)
+	b.Areas = as
+	if old > 0 && old != len(as) {
+		if len(as) > old {
+			b.Say(fmt.Sprintf("OOH, A NEW SCREEN! NOW WE HAVE %d.", len(as)))
+		} else {
+			b.Say("A SCREEN WENT AWAY. I'LL STAY OVER HERE.")
+		}
+		b.idleT, b.awayWait = 0, 1
+	}
+}
+
+func outside(v, lo, hi float64) float64 {
+	if v < lo {
+		return lo - v
+	}
+	if v > hi {
+		return v - hi
+	}
+	return 0
+}
+
+// areaAt returns the screen a point belongs to (the nearest one if it is in a gap).
+func (b *Buddy) areaAt(x, y float64) int {
+	best, bestD := 0, math.Inf(1)
+	for i, a := range b.Areas {
+		d := 3*outside(x, a.L, a.R) + outside(y, a.T, a.B) + math.Abs(a.B-y)*1e-6
+		if d < bestD {
+			best, bestD = i, d
+		}
+	}
+	return best
+}
+
+// areaHolding returns the screen containing the point, or -1.
+func (b *Buddy) areaHolding(x, y float64) int {
+	for i, a := range b.Areas {
+		if x >= a.L && x <= a.R && y >= a.T && y <= a.B {
+			return i
+		}
+	}
+	return -1
+}
+
+func (b *Buddy) cur() Area { return b.Areas[b.areaAt(b.X, b.Y)] }
+
+// HomeIdx is the index of the screen the buddy lives on.
+func (b *Buddy) HomeIdx() int {
+	if b.HomeScreen >= 0 && b.HomeScreen < len(b.Areas) {
+		return b.HomeScreen
+	}
+	for i, a := range b.Areas {
+		if a.Primary {
+			return i
+		}
+	}
+	return 0
+}
 
 func (b *Buddy) homeX() float64 {
+	a := b.Areas[b.HomeIdx()]
 	m := 60 * float64(b.S)
 	if b.HomeRight {
-		return b.R - m
+		return a.R - m
 	}
-	return b.L + m
+	return a.L + m
 }
+
+// ScreenName is a human label for screen i, e.g. "Screen 2 - right (main)".
+func (b *Buddy) ScreenName(i int) string {
+	a := b.Areas[i]
+	name := fmt.Sprintf("Screen %d", i+1)
+	if len(b.Areas) == 2 {
+		o := b.Areas[1-i]
+		dx := (a.L+a.R)/2 - (o.L+o.R)/2
+		dy := (a.T+a.B)/2 - (o.T+o.B)/2
+		switch {
+		case math.Abs(dx) >= math.Abs(dy) && dx < 0:
+			name += " - left"
+		case math.Abs(dx) >= math.Abs(dy):
+			name += " - right"
+		case dy < 0:
+			name += " - top"
+		default:
+			name += " - bottom"
+		}
+	}
+	if a.Primary {
+		name += " (main)"
+	}
+	return name
+}
+
+// BodyRect is the buddy's body (antenna included) in screen pixels.
+func (b *Buddy) BodyRect() (x0, y0, x1, y1 int) {
+	S := float64(b.S)
+	return int(b.X - 40*S), int(b.Y - 80*S), int(b.X + 40*S), int(b.Y + 2*S)
+}
+
+func (b *Buddy) Hush() { b.text = "" }
 
 func (b *Buddy) Say(s string) {
 	b.text = strings.ToUpper(s)
 	b.textAge = 0
 	b.textDur = 2.5 + float64(len(s))*0.07
 }
+
+func pick(s []string) string { return s[rand.Intn(len(s))] }
 
 var quips = []string{
 	"REMEMBER TO DRINK SOME WATER.",
@@ -227,17 +336,122 @@ var quips = []string{
 	"WHAT ARE WE MAKING TODAY?",
 	"DEEP BREATH IN... AND OUT.",
 	"RIGHT-CLICK ME FOR OPTIONS.",
+	"I'M SMALL BUT I'M MIGHTY.",
+	"YOUR DESKTOP IS MY PLAYGROUND.",
+	"FUN FACT: OCTOPUSES HAVE THREE HEARTS.",
+	"FUN FACT: HONEY NEVER SPOILS.",
+	"FUN FACT: A DAY ON VENUS IS LONGER THAN ITS YEAR.",
+	"FUN FACT: BANANAS ARE BERRIES. STRAWBERRIES AREN'T.",
+	"FUN FACT: OTTERS HOLD HANDS WHEN THEY SLEEP.",
+	"HAVE YOU TRIED TURNING IT OFF AND ON AGAIN?",
+	"POSTURE CHECK! SIT UP STRAIGHT.",
+	"BLINK A FEW TIMES. YOUR EYES WILL THANK YOU.",
+	"A SNACK WOULDN'T HURT.",
+	"PROGRESS, NOT PERFECTION.",
+	"I'D HELP YOU TYPE BUT MY LEGS ARE TOO SHORT.",
+	"CLOSE A FEW TABS. JUST A FEW.",
+	"I'M NOT LAZY, I'M IN ENERGY-SAVING MODE.",
+	"YOU + ME = BEST TEAM.",
+	"LEAVE ME ALONE FOR 2 MINUTES AND I'LL NAP.",
+	"TODAY IS A GOOD DAY TO FINISH SOMETHING.",
+	"I TRIED COUNTING YOUR PIXELS. I GAVE UP.",
+	"MUSIC MAKES EVERYTHING BETTER.",
+	"WHEN IN DOUBT, TAKE A WALK.",
+	"BEEP BOOP. JUST CHECKING IN.",
+	"<3",
+	"IF YOU'RE STUCK, EXPLAIN IT TO ME. I'M A GREAT LISTENER.",
+	"ROME WASN'T BUILT IN A DAY. BUT THEY WERE LAYING BRICKS EVERY HOUR.",
+	"DONE IS BETTER THAN PERFECT.",
+	"I LIKE IT HERE.",
+}
+
+var petLines = []string{
+	"MORE PETS, PLEASE!", "PURR... WAIT, AM I A CAT?", "YAY!", "YOU'RE MY FAVORITE HUMAN.",
+	"HEHE!", "BEST. DAY. EVER.", "<3 <3 <3", "AGAIN!", "THAT'S THE SPOT!", "I FEEL SO LOVED.",
+}
+
+var throwLines = []string{
+	"WHEEEEE!", "I CAN FLY!", "AGAIN! AGAIN!", "WOOOAH!", "TO INFINITY!",
+	"AIRMAIL!", "I'M A BIRD NOW.", "NO BRAKES!", "THIS IS FINE.",
+}
+
+var wakeLines = []string{
+	"*YAWN* OH! WELCOME BACK.", "I WASN'T SLEEPING. I WAS RESTING MY EYES.",
+	"YOU'RE BACK! I MISSED YOU.", "*STRETCH* READY WHEN YOU ARE.", "HUH? WHAT? OH, HI!",
+	"I HAD THE BEST DREAM ABOUT PIXELS.",
+}
+
+var visitLines = []string{
+	"BRB, CHECKING OUT THE OTHER SCREEN!", "FIELD TRIP!", "WHAT'S OVER HERE?",
+	"JUST VISITING. BACK SOON!", "NEW SCREEN, WHO DIS?",
+}
+
+var homeLines = []string{"BACK TO MY CORNER!", "HOME SWEET HOME.", "OKAY, GOING HOME."}
+
+// screenLines each take the number of screens.
+var screenLines = []string{
+	"%d SCREENS? SO MUCH ROOM TO RUN!",
+	"I CAN SEE ALL %d OF YOUR SCREENS FROM HERE.",
+	"%d SCREENS. YOU MUST BE A PRO.",
+	"RIGHT-CLICK ME TO PICK WHICH OF YOUR %d SCREENS I LIVE ON.",
+	"THROW ME TO ANOTHER SCREEN. ALL %d ARE MY HOME.",
+}
+
+// hourLines each take the hour.
+var hourLines = []string{
+	"IT'S %02d:00! QUICK STRETCH?", "%02d:00 ALREADY. WATER BREAK?", "DING! IT'S %02d:00.",
+}
+
+func greetingLines(now time.Time) []string {
+	switch h := now.Hour(); {
+	case h < 5:
+		return []string{"STILL UP? I'LL KEEP YOU COMPANY.", "NIGHT OWL MODE: ON."}
+	case h < 12:
+		return []string{"GOOD MORNING! LET'S BUILD SOMETHING.", "MORNING! COFFEE FIRST?", "RISE AND SHINE!"}
+	case h < 18:
+		return []string{"GOOD AFTERNOON! I'M RIGHT HERE.", "HELLO AGAIN! WHAT ARE WE DOING?"}
+	default:
+		return []string{"GOOD EVENING! NICE TO SEE YOU.", "EVENING! LET'S KEEP IT CHILL."}
+	}
+}
+
+func timeLines(now time.Time) []string {
+	var l []string
+	switch now.Weekday() {
+	case time.Monday:
+		l = append(l, "MONDAY AGAIN? WE GOT THIS.")
+	case time.Wednesday:
+		l = append(l, "HALFWAY THROUGH THE WEEK!")
+	case time.Friday:
+		l = append(l, "IT'S FRIDAY! ALMOST THERE.")
+	case time.Saturday, time.Sunday:
+		l = append(l, "WORKING ON A WEEKEND? RESPECT.", "WEEKEND VIBES.")
+	}
+	switch h := now.Hour(); {
+	case h >= 23 || h < 5:
+		l = append(l, "IT'S LATE. SLEEP IS A FEATURE TOO.")
+	case h >= 11 && h < 13:
+		l = append(l, "LUNCH TIME SOON?")
+	case h >= 15 && h < 17:
+		l = append(l, "AFTERNOON SLUMP? HAVE SOME WATER.")
+	}
+	return append(l, "HAPPY "+strings.ToUpper(now.Weekday().String())+"!")
 }
 
 func (b *Buddy) Quip() {
-	switch rand.Intn(6) {
-	case 0:
-		b.Say(time.Now().Format("IT'S 15:04. TIME FLIES!"))
-	case 1:
+	now := time.Now()
+	switch r := rand.Intn(10); {
+	case r == 0:
+		b.Say(now.Format("IT'S 15:04. TIME FLIES!"))
+	case r == 1:
 		m := int(time.Since(b.started).Minutes())
 		b.Say(fmt.Sprintf("WE'VE HUNG OUT FOR %d MIN. YOU PETTED ME %d TIMES.", m, b.pets))
+	case r == 2 && len(b.Areas) > 1:
+		b.Say(fmt.Sprintf(pick(screenLines), len(b.Areas)))
+	case r == 3:
+		b.Say(pick(timeLines(now)))
 	default:
-		b.Say(quips[rand.Intn(len(quips))])
+		b.Say(pick(quips))
 	}
 }
 
@@ -246,16 +460,37 @@ func (b *Buddy) Hop(power float64) {
 		return
 	}
 	b.VY = -power * float64(b.S)
-	b.State = Air
+	b.State, b.leap = Air, false
 }
 
-func (b *Buddy) SetHome(right bool) {
-	b.HomeRight = right
+func (b *Buddy) wakeForMove() {
 	b.idleT, b.awayWait = 0, 0.3
 	if b.State == Sleep {
 		b.State = Idle
 	}
+}
+
+func (b *Buddy) SetHome(right bool) {
+	b.HomeRight = right
+	b.wakeForMove()
 	b.Say("MOVING! BE RIGHT THERE.")
+}
+
+func (b *Buddy) SetHomeScreen(i int) {
+	b.HomeScreen = i
+	b.wakeForMove()
+	b.Say("OFF TO MY NEW SCREEN!")
+}
+
+// LeapTo jumps in an arc to a floor point, possibly on another screen.
+func (b *Buddy) LeapTo(tx, ty float64) {
+	S := float64(b.S)
+	g := 2000 * S
+	dx, dy := tx-b.X, ty-b.Y
+	T := math.Max(0.7, math.Min(1.6, 0.5+math.Hypot(dx, dy)/(2400*S)))
+	b.VX, b.VY = dx/T, dy/T-0.5*g*T
+	b.State, b.leap, b.leapArea = Air, true, b.areaAt(tx, ty)
+	b.face = math.Copysign(1, dx)
 }
 
 func (b *Buddy) spawn(kind, n int) {
@@ -264,7 +499,7 @@ func (b *Buddy) spawn(kind, n int) {
 		p := particle{kind: kind, x: (rand.Float64()*40 - 20) * S, y: -50 * S}
 		switch kind {
 		case 0:
-			p.vx, p.vy, p.max = (rand.Float64()*40-20)*S, -(40+rand.Float64()*30)*S, 1.3
+			p.vx, p.vy, p.max = (rand.Float64()*40-20)*S, -(40+rand.Float64()*30)*S, 1.15+rand.Float64()*0.3
 		case 1:
 			p.x, p.y = (10+rand.Float64()*4)*S, -56*S
 			p.vx, p.vy, p.max = 4*S, -16*S, 2.2
@@ -279,7 +514,7 @@ func (b *Buddy) spawn(kind, n int) {
 
 // Mouse input. Positions are screen pixels.
 func (b *Buddy) Down(cx, cy float64) {
-	b.State = Drag
+	b.State, b.leap = Drag, false
 	b.offX, b.offY = b.X-cx, b.Y-cy
 	b.moved, b.VX, b.VY = 0, 0, 0
 }
@@ -296,7 +531,7 @@ func (b *Buddy) Up() {
 		b.pets++
 		b.happy = 1.6
 		b.spawn(0, 4)
-		if b.Y >= b.B-1 {
+		if b.Y >= b.cur().B-1 {
 			b.VY = -330 * S
 		}
 		switch {
@@ -304,8 +539,8 @@ func (b *Buddy) Up() {
 			b.Say("HEHE! THAT TICKLES.")
 		case b.pets%25 == 0:
 			b.Say(fmt.Sprintf("%d PETS! I'M THE LUCKIEST BUDDY.", b.pets))
-		case b.pets%7 == 0:
-			b.Say("MORE PETS, PLEASE!")
+		case rand.Intn(3) == 0:
+			b.Say(pick(petLines))
 		}
 		return
 	}
@@ -313,7 +548,7 @@ func (b *Buddy) Up() {
 	b.VX = math.Max(-lim, math.Min(lim, b.VX))
 	b.VY = math.Max(-lim, math.Min(lim, b.VY))
 	if math.Hypot(b.VX, b.VY) > 900*S {
-		b.Say([]string{"WHEEEEE!", "I CAN FLY!", "AGAIN! AGAIN!", "WOOOAH!"}[rand.Intn(4)])
+		b.Say(pick(throwLines))
 	}
 }
 
@@ -321,7 +556,9 @@ func (b *Buddy) Update(dt, cx, cy, userIdle float64) {
 	dt = math.Max(0.001, math.Min(0.05, dt))
 	S := float64(b.S)
 	b.t += dt
-	floor, half := b.B, 36*S
+	half := 36 * S
+	ci := b.areaAt(b.X, b.Y)
+	cur := b.Areas[ci]
 
 	if b.blinkIn -= dt; b.blinkIn < 0 {
 		b.blinkT, b.blinkIn = 0.13, 1.5+rand.Float64()*4
@@ -348,35 +585,64 @@ func (b *Buddy) Update(dt, cx, cy, userIdle float64) {
 
 	switch b.State {
 	case Drag:
-		nx, ny := cx+b.offX, math.Min(cy+b.offY, floor)
+		nx, ny := cx+b.offX, cy+b.offY
+		ny = math.Min(ny, b.Areas[b.areaAt(nx, ny)].B)
 		b.VX += ((nx-b.X)/dt - b.VX) * 0.3
 		b.VY += ((ny-b.Y)/dt - b.VY) * 0.3
 		b.moved += math.Abs(nx-b.X) + math.Abs(ny-b.Y)
 		b.X, b.Y = nx, ny
 	case Air:
 		b.VY += 2000 * S * dt
-		b.X += b.VX * dt
-		b.Y += b.VY * dt
-		if b.X < b.L+half {
-			b.X, b.VX = b.L+half, math.Abs(b.VX)*0.6
+		nx, ny := b.X+b.VX*dt, b.Y+b.VY*dt
+		if !b.leap {
+			// screen edges are walls, unless another screen continues there
+			if nx < cur.L+half && b.areaHolding(cur.L-1, ny-20*S) < 0 {
+				nx, b.VX = cur.L+half, math.Abs(b.VX)*0.6
+			}
+			if nx > cur.R-half && b.areaHolding(cur.R+1, ny-20*S) < 0 {
+				nx, b.VX = cur.R-half, -math.Abs(b.VX)*0.6
+			}
+			if ny < cur.T+70*S && b.areaHolding(nx, cur.T-1) < 0 {
+				ny, b.VY = cur.T+70*S, math.Abs(b.VY)*0.4
+			}
 		}
-		if b.X > b.R-half {
-			b.X, b.VX = b.R-half, -math.Abs(b.VX)*0.6
+		// land on the floor we just crossed: the current screen's, or the
+		// next one's if we moved over; a leap only lands on its target
+		oy := b.Y
+		b.X, b.Y = nx, ny
+		cands := []int{ci, b.areaAt(b.X, b.Y)}
+		if b.leap {
+			cands = []int{b.leapArea}
 		}
-		if b.Y < b.T+70*S {
-			b.Y, b.VY = b.T+70*S, math.Abs(b.VY)*0.4
+		landed := -1
+		for _, i := range cands {
+			a := b.Areas[min(i, len(b.Areas)-1)]
+			if b.VY > 0 && oy <= a.B+1 && b.Y >= a.B && b.X >= a.L && b.X <= a.R {
+				landed = i
+				break
+			}
 		}
-		if b.Y >= floor {
-			b.Y = floor
-			if b.VY > 320*S {
+		if landed >= 0 {
+			b.Y = b.Areas[min(landed, len(b.Areas)-1)].B
+			switch {
+			case b.leap:
+				b.leap = false
+				b.VX, b.VY, b.State, b.idleT, b.squash = 0, 0, Idle, 0, 0.3
+				b.spawn(2, 8)
+			case b.VY > 320*S:
 				b.squash = math.Min(0.4, b.VY/(3500*S))
 				b.spawn(2, 6)
 				b.VY, b.VX = -b.VY*0.42, b.VX*0.7
-			} else {
+			default:
 				b.VX, b.VY, b.State, b.idleT, b.squash = 0, 0, Idle, 0, 0.18
 			}
 		}
+		b.rescue()
 	case Walk:
+		if b.Paused {
+			b.State = Idle
+			break
+		}
 		dir := 1.0
 		if b.walkTo < b.X {
 			dir = -1
@@ -388,17 +654,28 @@ func (b *Buddy) Update(dt, cx, cy, userIdle float64) {
 		}
 	case Idle:
 		b.idleT += dt
+		if b.Paused {
+			break
+		}
+		hi := b.HomeIdx()
 		home := b.homeX()
-		away := math.Abs(b.X-home) > 2
+		away := ci != hi || math.Abs(b.X-home) > 2
 		switch {
 		case away && b.idleT > b.awayWait:
-			b.walkTo, b.State = home, Walk
+			if ci == hi && math.Abs(b.X-home) < 500*S {
+				b.walkTo, b.State = home, Walk
+			} else {
+				b.LeapTo(home, b.Areas[hi].B)
+				if rand.Intn(2) == 0 {
+					b.Say(pick(homeLines))
+				}
+			}
 		case !away && userIdle > 120:
 			b.State, b.zT, b.text = Sleep, 0.5, ""
 		case !away:
 			if b.nextAct -= dt; b.nextAct < 0 {
 				b.nextAct = 25 + rand.Float64()*45
-				switch rand.Intn(10) {
+				switch rand.Intn(12) {
 				case 0, 1, 2, 3:
 					b.Hop(300)
 				case 4, 5, 6:
@@ -406,7 +683,19 @@ func (b *Buddy) Update(dt, cx, cy, userIdle float64) {
 					if b.HomeRight {
 						dir = -1
 					}
-					b.walkTo, b.State, b.awayWait = home+dir*(60+rand.Float64()*200)*S, Walk, 4
+					to := home + dir*(60+rand.Float64()*200)*S
+					b.walkTo = math.Max(cur.L+half, math.Min(cur.R-half, to))
+					b.State, b.awayWait = Walk, 4
+				case 7:
+					if len(b.Areas) < 2 {
+						b.Quip()
+						break
+					}
+					j := (hi + 1 + rand.Intn(len(b.Areas)-1)) % len(b.Areas)
+					a := b.Areas[j]
+					b.LeapTo(a.L+100*S+rand.Float64()*math.Max(0, a.R-a.L-200*S), a.B)
+					b.Say(pick(visitLines))
+					b.awayWait = 6
 				default:
 					b.Quip()
 				}
@@ -419,23 +708,24 @@ func (b *Buddy) Update(dt, cx, cy, userIdle float64) {
 		}
 		if userIdle < 1 {
 			b.State, b.idleT = Idle, 0
-			b.Say("*YAWN* OH! WELCOME BACK.")
+			b.Say(pick(wakeLines))
 			b.Hop(260)
 		}
 	}
-	// keep inside the work area if it changed
-	if b.State != Drag && b.State != Air {
-		b.X = math.Max(b.L+half, math.Min(b.R-half, b.X))
-		if b.Y > floor {
-			b.Y = floor
-		} else if b.Y < floor-1 {
+	// stay on a screen if the layout changed under us
+	if b.State == Idle || b.State == Walk || b.State == Sleep {
+		a := b.Areas[b.areaAt(b.X, b.Y)]
+		b.X = math.Max(a.L+half, math.Min(a.R-half, b.X))
+		if b.Y > a.B {
+			b.Y = a.B
+		} else if b.Y < a.B-1 {
 			b.State = Air
 		}
 	}
 	if now := time.Now(); now.Hour() != b.lastHour {
 		b.lastHour = now.Hour()
 		if b.State != Sleep {
-			b.Say(fmt.Sprintf("IT'S %02d:00! QUICK STRETCH?", now.Hour()))
+			b.Say(fmt.Sprintf(pick(hourLines), now.Hour()))
 		}
 	}
 	n := 0
@@ -445,7 +735,7 @@ func (b *Buddy) Update(dt, cx, cy, userIdle float64) {
 			p.vy += 500 * S * dt
 		}
 		if p.kind == 0 {
-			p.vx = math.Sin(p.life*6+float64(len(b.parts))) * 14 * S
+			p.vx = math.Sin(p.life*6+p.max*7) * 14 * S
 		}
 		p.x += p.vx * dt
 		p.y += p.vy * dt
@@ -457,8 +747,23 @@ func (b *Buddy) Update(dt, cx, cy, userIdle float64) {
 	b.parts = b.parts[:n]
 }
 
+// rescue puts the buddy back home if it somehow left every screen.
+func (b *Buddy) rescue() {
+	S := float64(b.S)
+	lo, hi := math.Inf(1), math.Inf(-1)
+	for _, a := range b.Areas {
+		lo, hi = math.Min(lo, a.T), math.Max(hi, a.B)
+	}
+	if b.Y > hi+1500*S || b.Y < lo-5000*S {
+		a := b.Areas[b.HomeIdx()]
+		b.leap, b.VX, b.VY = false, 0, 0
+		b.X, b.Y = b.homeX(), a.T+(a.B-a.T)/2
+	}
+}
+
 func (b *Buddy) anchor() (ax, ay int, right bool) {
-	right = b.X > (b.L+b.R)/2
+	a := b.cur()
+	right = b.X > (a.L+a.R)/2
 	ax = 48 * b.S
 	if right {
 		ax = (canvasW - 48) * b.S
@@ -524,7 +829,7 @@ func (b *Buddy) Draw(c *Canvas) {
 	}
 
 	// ground shadow
-	if h := b.B - b.Y; h < 60*Sf {
+	if h := b.cur().B - b.Y; h < 60*Sf {
 		f := 1 - h/(60*Sf)
 		w := int(26 * Sf * (0.5 + 0.5*f) * sx)
 		a := uint32(70 * f)
