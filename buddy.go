@@ -165,6 +165,7 @@ type Buddy struct {
 	Areas      []Area // work area of every screen, left to right
 	HomeScreen int    // index into Areas; -1 = main screen
 	Paused     bool   // e.g. while the right-click menu is open
+	Pace       int    // how often it does things: PaceOften, PaceNormal, PaceChill
 	leap       bool
 	leapArea   int
 	act        *Act
@@ -195,7 +196,7 @@ type Area struct {
 }
 
 func NewBuddy(scale int, areas []Area, homeScreen int, homeRight bool) *Buddy {
-	bd := &Buddy{S: scale, HomeRight: homeRight, HomeScreen: homeScreen, blinkIn: 2, nextAct: 12, started: time.Now()}
+	bd := &Buddy{S: scale, HomeRight: homeRight, HomeScreen: homeScreen, blinkIn: 2, nextAct: 5, started: time.Now()}
 	bd.SetAreas(areas)
 	a := bd.Areas[bd.HomeIdx()]
 	bd.X = bd.homeX()
@@ -467,6 +468,32 @@ func (b *Buddy) Quip() {
 	}
 }
 
+const (
+	PaceOften = iota
+	PaceNormal
+	PaceChill
+)
+
+var PaceNames = []string{"Often (every few seconds)", "Normal", "Chill (once in a while)"}
+
+// restTime is how long the buddy waits at home before doing something
+// random; 80% of the time that something is an activity.
+func (b *Buddy) restTime() float64 {
+	switch b.Pace {
+	case PaceOften:
+		return 4 + rand.Float64()*8
+	case PaceChill:
+		return 35 + rand.Float64()*45
+	}
+	return 10 + rand.Float64()*18
+}
+
+// SetPace changes how often it does things and acts on it soon.
+func (b *Buddy) SetPace(p int) {
+	b.Pace = p
+	b.nextAct = math.Min(b.nextAct, 2)
+}
+
 func (b *Buddy) Hop(power float64) {
 	if b.State == Drag {
 		return
@@ -686,11 +713,11 @@ func (b *Buddy) Update(dt, cx, cy, userIdle float64) {
 			b.State, b.zT, b.text = Sleep, 0.5, ""
 		case !away:
 			if b.nextAct -= dt; b.nextAct < 0 {
-				b.nextAct = 18 + rand.Float64()*35
+				b.nextAct = b.restTime()
 				switch r := rand.Intn(20); r {
-				case 12, 13:
+				case 16:
 					b.Hop(300)
-				case 14, 15:
+				case 17:
 					dir := 1.0
 					if b.HomeRight {
 						dir = -1
@@ -698,7 +725,7 @@ func (b *Buddy) Update(dt, cx, cy, userIdle float64) {
 					to := home + dir*(60+rand.Float64()*200)*S
 					b.walkTo = math.Max(cur.L+half, math.Min(cur.R-half, to))
 					b.State, b.awayWait = Walk, 4
-				case 16:
+				case 18:
 					if len(b.Areas) < 2 {
 						b.Quip()
 						break
@@ -708,7 +735,7 @@ func (b *Buddy) Update(dt, cx, cy, userIdle float64) {
 					b.LeapTo(a.L+100*S+rand.Float64()*math.Max(0, a.R-a.L-200*S), a.B)
 					b.Say(pick(visitLines))
 					b.awayWait = 6
-				case 17, 18, 19:
+				case 19:
 					b.Quip()
 				default:
 					b.StartActivity(-1)

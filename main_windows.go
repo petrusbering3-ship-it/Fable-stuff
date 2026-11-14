@@ -122,7 +122,7 @@ const (
 	appKey  = `Software\FableBuddy`
 	appName = "FableBuddy"
 
-	idQuip, idJump, idSide, idStartup, idQuit, idFun, idScreen, idAct = 1, 2, 3, 4, 5, 6, 100, 200
+	idQuip, idJump, idSide, idStartup, idQuit, idFun, idScreen, idAct, idPace = 1, 2, 3, 4, 5, 6, 100, 200, 300
 )
 
 func u16(s string) *uint16 { p, _ := syscall.UTF16PtrFromString(s); return p }
@@ -310,6 +310,15 @@ func menu() {
 		add(acts, uintptr(idAct+i), a, f)
 	}
 	add(m, acts, fmt.Sprintf("Activities (%d)", len(buddyActs())), popup)
+	pace := mustMenu()
+	for i, n := range PaceNames {
+		f := uintptr(0)
+		if i == buddy.Pace {
+			f = checked
+		}
+		add(pace, uintptr(idPace+i), n, f)
+	}
+	add(m, pace, "Random activities", popup)
 	add(m, idQuip, "Say something", 0)
 	add(m, idJump, "Jump!", 0)
 	add(m, 0, "", sep)
@@ -364,6 +373,9 @@ func menu() {
 		buddy.StartActivity(-1)
 	case cmd >= idAct && cmd < uintptr(idAct+len(buddyActs())):
 		buddy.StartActivity(int(cmd - idAct))
+	case cmd >= idPace && cmd < uintptr(idPace+len(PaceNames)):
+		buddy.SetPace(int(cmd - idPace))
+		regSet(appKey, "Pace", strconv.Itoa(buddy.Pace))
 	case cmd == idQuip:
 		buddy.Quip()
 	case cmd == idJump:
@@ -452,6 +464,12 @@ func main() {
 	scale = max(1, min(4, scale))
 
 	buddy = NewBuddy(scale, screens(), home, !left)
+	buddy.Pace = PaceNormal
+	if v, ok := regGet(appKey, "Pace"); ok {
+		if p, err := strconv.Atoi(v); err == nil && p >= 0 && p < len(PaceNames) {
+			buddy.Pace = p
+		}
+	}
 	canvas = &Canvas{W: canvasW * scale, H: canvasH * scale}
 
 	memDC, _, _ = pCreateCompatibleDC.Call(screenDC)

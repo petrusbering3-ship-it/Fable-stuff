@@ -24,7 +24,8 @@ Download `FableBuddy.exe` from the [latest release](../../releases/latest) and d
 | Drag and fling it | flies with real physics, bounces off the screen edges, then walks home |
 | Leave the PC for 2 minutes | tucks itself in with a blanket, pillows and an eye mask and snores small z's; wakes when you return |
 | Open a fullscreen game or video | hides until you leave fullscreen |
-| Wait | does one of **53 activities** on its own: rides a roller coaster, scrolls on its phone, drinks coffee, plays guitar, goes fishing, skateboards, paints, toasts marshmallows, takes a bubble bath, gets the hiccups, pets a kitty that wanders by... |
+| Wait | does a random one of **53 activities** on its own every few seconds to a minute: rides a roller coaster, scrolls on its phone, drinks coffee, plays guitar, goes fishing, skateboards, paints, toasts marshmallows, takes a bubble bath, gets the hiccups, pets a kitty that wanders by... |
+| Want more or fewer | right-click → *Random activities* → Often / Normal / Chill (remembered) |
 | Want to see one now | right-click → *Do something fun!*, or pick any of them from *Activities* |
 | Wait some more | hops, strolls, and drops one of 70+ lines (reminders, fun facts, day-of-week and time-aware comments); tells you when a new hour starts |
 | Have 2+ screens | roams all of them: throw it from one screen to another, and it leaps back home in an arc. Now and then it visits your other screens by itself |

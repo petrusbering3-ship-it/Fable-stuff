@@ -217,3 +217,23 @@ func TestDragInterruptsActivity(t *testing.T) {
 		t.Fatalf("state %d after drag", b.State)
 	}
 }
+
+func TestDoesActivitiesOnItsOwn(t *testing.T) {
+	for pace, minActs := range []int{12, 6, 1} {
+		b := NewBuddy(2, twoScreens, -1, true)
+		b.Pace = pace
+		started := 0
+		var cur *Act
+		for i := 0; i < 60*240; i++ { // four minutes with the user active
+			b.Update(1.0/60, 500, 500, 0)
+			if b.act != nil && b.act != cur {
+				started++
+			}
+			cur = b.act
+		}
+		if started < minActs {
+			t.Errorf("pace %d: only %d activities in 4 minutes", pace, started)
+		}
+		t.Logf("pace %d: %d activities in 4 minutes", pace, started)
+	}
+}
