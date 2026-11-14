@@ -2,7 +2,7 @@
 
 A tiny pixel-art desktop companion that lives in the corner of your Windows screen.
 
-![Fable Buddy](docs/buddy.png) ![Being petted](docs/pet.png)
+![Fable Buddy](docs/buddy.png) ![Being petted](docs/pet.png) ![Asleep](docs/sleep.png)
 
 ## Run it
 
@@ -20,7 +20,8 @@ Download [`dist/FableBuddy.exe`](dist/FableBuddy.exe) and double-click it. That'
 | Move your mouse | follows the cursor with its eyes |
 | Click it | gets petted: hearts, a happy face, a little hop |
 | Drag and fling it | flies with real physics, bounces off the screen edges, then walks home |
-| Leave the PC for 2 minutes | falls asleep and snores; wakes up when you return |
+| Leave the PC for 2 minutes | tucks itself in with a blanket, pillows and an eye mask and snores small z's; wakes when you return |
+| Open a fullscreen game or video | hides until you leave fullscreen |
 | Wait | hops, strolls, and drops the occasional reminder; tells you when a new hour starts |
 | Right-click it | Say something · Jump! · switch corner · Start with Windows · Quit |
 

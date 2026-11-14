@@ -167,6 +167,7 @@ type Buddy struct {
 	squash, lookX, lookY        float64
 	walkTo, face                float64
 	offX, offY, moved, zT       float64
+	sleepF                      float64 // 0 awake .. 1 tucked in
 	text                        string
 	textAge, textDur            float64
 	parts                       []particle
@@ -265,8 +266,8 @@ func (b *Buddy) spawn(kind, n int) {
 		case 0:
 			p.vx, p.vy, p.max = (rand.Float64()*40-20)*S, -(40+rand.Float64()*30)*S, 1.3
 		case 1:
-			p.x, p.y = 14*S, -58*S
-			p.vx, p.vy, p.max = 5*S, -20*S, 2.4
+			p.x, p.y = (10+rand.Float64()*4)*S, -56*S
+			p.vx, p.vy, p.max = 4*S, -16*S, 2.2
 		case 2:
 			p.y = -2 * S
 			p.vx, p.vy, p.max = (rand.Float64()*240-120)*S, -(40+rand.Float64()*120)*S, 0.6
@@ -339,6 +340,11 @@ func (b *Buddy) Update(dt, cx, cy, userIdle float64) {
 	b.lookX += (ex/d - b.lookX) * k
 	b.lookY += (ey/d - b.lookY) * k
 	b.face *= math.Exp(-dt * 6)
+	if b.State == Sleep {
+		b.sleepF = math.Min(1, b.sleepF+dt*2.5)
+	} else {
+		b.sleepF = math.Max(0, b.sleepF-dt*5)
+	}
 
 	switch b.State {
 	case Drag:
@@ -408,7 +414,7 @@ func (b *Buddy) Update(dt, cx, cy, userIdle float64) {
 		}
 	case Sleep:
 		if b.zT -= dt; b.zT < 0 {
-			b.zT = 1.3
+			b.zT = 0.75
 			b.spawn(1, 1)
 		}
 		if userIdle < 1 {
@@ -439,7 +445,7 @@ func (b *Buddy) Update(dt, cx, cy, userIdle float64) {
 			p.vy += 500 * S * dt
 		}
 		if p.kind == 0 {
-			p.vx = math.Sin(b.t*5+p.max*p.y) * 14 * S
+			p.vx = math.Sin(p.life*6+float64(len(b.parts))) * 14 * S
 		}
 		p.x += p.vx * dt
 		p.y += p.vy * dt
@@ -526,6 +532,23 @@ func (b *Buddy) Draw(c *Canvas) {
 		c.Rect(ax-w+3*S, ay-3*S, 2*w-6*S, 6*S, a<<24)
 	}
 
+	// pillows (behind the body)
+	sl := b.sleepF
+	if sl > 0 {
+		rise := (1 - sl) * 3
+		pil := func(x, y, w, h float64, col, hi uint32) {
+			y += rise
+			cell(x+1, y-0.5, w-2, h+1, fade(cOutline, sl))
+			cell(x-0.5, y+1, w+1, h-2, fade(cOutline, sl))
+			cell(x, y+0.5, w, h-1, fade(cOutline, sl))
+			cell(x+1, y, w-2, h, fade(col, sl))
+			cell(x, y+1, w, h-2, fade(col, sl))
+			cell(x+1.5, y+0.6, w-5, 0.8, fade(hi, sl))
+		}
+		pil(-2.4, 5.5, 20.8, 7.5, 0xFFB9A7F0, 0xFFD5C9FA) // big lilac pillow
+		pil(-1.6, 0.2, 19.2, 8, 0xFFFDF8EE, 0xFFFFFFFF)   // cream pillow on top
+	}
+
 	// legs animation
 	step := -1
 	if b.State == Walk {
@@ -591,6 +614,8 @@ func (b *Buddy) Draw(c *Canvas) {
 	fo := b.face * 0.8
 	for _, exx := range []float64{3 + fo, 10 + fo} {
 		switch {
+		case sl > 0.5:
+			// handled by the eye mask below
 		case b.State == Sleep || b.blinkT > 0:
 			cell(exx, 5.4, 3, 0.8, cDark)
 		case b.happy > 0:
@@ -605,6 +630,18 @@ func (b *Buddy) Draw(c *Canvas) {
 			cell(px+0.2, py+0.2, 0.7, 0.7, 0xFFFFFFFF)
 		}
 	}
+	if sl > 0.5 { // eye mask
+		mf := (sl - 0.5) * 2
+		navy, lash := fade(0xFF3B3F8F, mf), fade(0xFFC9CEFF, mf)
+		cell(0, 4.9, 16, 1.1, fade(0xFF2A2D6B, mf)) // strap
+		for _, mx := range []float64{2.2, 9.2} {
+			cell(mx+0.6, 3.6, 3.4, 3.8, navy)
+			cell(mx, 4.2, 4.6, 2.6, navy)
+			cell(mx+1, 5.6, 0.7, 0.6, lash) // stitched sleepy eye
+			cell(mx+1.7, 6, 1.2, 0.6, lash)
+			cell(mx+2.9, 5.6, 0.7, 0.6, lash)
+		}
+	}
 	// mouth
 	switch {
 	case b.happy > 0:
@@ -613,9 +650,29 @@ func (b *Buddy) Draw(c *Canvas) {
 	case b.text != "" && b.textAge < float64(len(b.text))/38 && int(b.t*9)&1 == 0:
 		cell(7+fo, 7.8, 2, 1.3, cDark)
 	case b.State == Sleep:
-		cell(7.5+fo, 8, 1, 1, cDark)
+		cell(7.5+fo, 7.3, 1, 0.5+0.4*(1+math.Sin(b.t*1.6)), cDark)
 	default:
 		cell(7+fo, 8, 2, 0.6, cDark)
+	}
+
+	// blanket (slides up over the body when falling asleep)
+	if sl > 0 {
+		top := 14.4 - 5.6*sl
+		bh := 14.4 - top
+		cell(-2.2, top-0.5, 20.4, bh+0.5, cOutline)
+		cell(-2.7, top+0.5, 21.4, bh-0.5, cOutline)
+		cell(-1.7, top, 19.4, bh, 0xFF4F86E8)
+		cell(-2.2, top+1, 20.4, bh-1, 0xFF4F86E8)
+		cell(-1.7, top, 19.4, math.Min(1.3, bh), 0xFFE6F0FF) // folded edge
+		for i := 0; i < 9; i++ {                             // little star pattern
+			px, py := -0.8+float64(i)*2.2, top+2.1+float64(i%2)*1.6
+			if py+0.7 < 14.2 {
+				cell(px, py, 0.7, 0.7, 0xFFFFD166)
+			}
+		}
+		if bh > 3 {
+			cell(-1.7, 13.4, 19.4, 0.6, 0xFF3A6BC4) // shaded hem
+		}
 	}
 
 	// particles
@@ -632,11 +689,11 @@ func (b *Buddy) Draw(c *Canvas) {
 				}
 			}
 		case 1:
-			sz := S * (1 + int((p.max-p.life)*0.8))
-			for r, row := range []string{"#####", "...#.", "..#..", ".#...", "#####"} {
+			x += int(math.Sin(p.life*4) * 2 * Sf)
+			for r, row := range []string{"####", "..#.", ".#..", "####"} {
 				for k, ch := range row {
 					if ch == '#' {
-						c.Rect(x+k*sz, y+r*sz, sz, sz, fade(0xFFBFD7FF, f))
+						c.Rect(x+k*S, y+r*S, S, S, fade(0xFFD6E4FF, f))
 					}
 				}
 			}

@@ -43,6 +43,11 @@ var (
 	pSetWindowPos        = user32.NewProc("SetWindowPos")
 	pSetProcessDPIAware  = user32.NewProc("SetProcessDPIAware")
 	pDestroyWindow       = user32.NewProc("DestroyWindow")
+	pGetForegroundWindow = user32.NewProc("GetForegroundWindow")
+	pGetShellWindow      = user32.NewProc("GetShellWindow")
+	pGetWindowRect       = user32.NewProc("GetWindowRect")
+	pGetSystemMetrics    = user32.NewProc("GetSystemMetrics")
+	pGetClassName        = user32.NewProc("GetClassNameW")
 
 	pCreateCompatibleDC = gdi32.NewProc("CreateCompatibleDC")
 	pCreateDIBSection   = gdi32.NewProc("CreateDIBSection")
@@ -171,7 +176,28 @@ var (
 	canvas                *Canvas
 	last                  time.Time
 	frame                 int
+	hidden                bool
 )
+
+// fullscreenApp reports whether a game/video is covering the whole primary
+// screen, so the buddy can get out of the way.
+func fullscreenApp() bool {
+	fg, _, _ := pGetForegroundWindow.Call()
+	shell, _, _ := pGetShellWindow.Call()
+	if fg == 0 || fg == hwnd || fg == shell {
+		return false
+	}
+	var cls [64]uint16
+	pGetClassName.Call(fg, uintptr(unsafe.Pointer(&cls[0])), 64)
+	if n := syscall.UTF16ToString(cls[:]); n == "Progman" || n == "WorkerW" {
+		return false
+	}
+	var r rect
+	pGetWindowRect.Call(fg, uintptr(unsafe.Pointer(&r)))
+	w, _, _ := pGetSystemMetrics.Call(0)
+	h, _, _ := pGetSystemMetrics.Call(1)
+	return r.L <= 0 && r.T <= 0 && r.R >= int32(w) && r.B >= int32(h)
+}
 
 func workArea() (float64, float64, float64, float64) {
 	var r rect
@@ -198,6 +224,14 @@ func tick() {
 	last = now
 	if frame++; frame%60 == 0 {
 		buddy.SetArea(workArea())
+		if fs := fullscreenApp(); fs != hidden && buddy.State != Drag {
+			hidden = fs
+			show := uintptr(4) // SW_SHOWNOACTIVATE
+			if fs {
+				show = 0
+			}
+			pShowWindow.Call(hwnd, show)
+		}
 		// stay above other windows without stealing focus
 		pSetWindowPos.Call(hwnd, ^uintptr(0), 0, 0, 0, 0, 0x0001|0x0002|0x0010)
 	}
