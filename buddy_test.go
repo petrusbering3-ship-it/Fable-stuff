@@ -160,3 +160,60 @@ func TestRandomThrowsAlwaysEndHome(t *testing.T) {
 		}
 	}
 }
+
+func TestActivities(t *testing.T) {
+	if len(acts) < 50 {
+		t.Fatalf("only %d activities", len(acts))
+	}
+	var said []string
+	sayHook = func(s string) { said = append(said, s) }
+	defer func() { sayHook = nil }()
+	names := map[string]bool{}
+	for i, a := range acts {
+		if names[a.Name] {
+			t.Errorf("duplicate activity %q", a.Name)
+		}
+		names[a.Name] = true
+		for _, right := range []bool{true, false} {
+			for _, S := range []int{1, 3} {
+				b := quiet(NewBuddy(S, twoScreens, -1, right))
+				sim(b, 3)
+				c := &Canvas{W: canvasW * S, H: canvasH * S}
+				c.Pix = make([]byte, c.W*c.H*4)
+				b.StartActivity(i)
+				if b.State != Busy {
+					t.Fatalf("%s: did not start", a.Name)
+				}
+				x := b.X
+				for k := 0; k < int(a.Dur*60)+5; k++ {
+					b.Update(1.0/60, 0, 0, 0)
+					b.Draw(c)
+				}
+				if b.State != Idle || b.X != x {
+					t.Errorf("%s: did not end cleanly (state %d, moved %v)", a.Name, b.State, b.X-x)
+				}
+			}
+		}
+	}
+	for _, s := range said {
+		for _, ch := range strings.ToUpper(s) {
+			if _, ok := font[ch]; !ok && ch != ' ' {
+				t.Errorf("%q: no glyph for %q", s, ch)
+			}
+		}
+	}
+}
+
+func TestDragInterruptsActivity(t *testing.T) {
+	b := quiet(NewBuddy(2, twoScreens, -1, true))
+	sim(b, 3)
+	b.StartActivity(0)
+	sim(b, 1)
+	b.Down(b.X, b.Y-40)
+	b.Update(1.0/60, b.X, b.Y-40, 0)
+	b.Up()
+	sim(b, 8)
+	if b.State != Idle || b.act != nil {
+		t.Fatalf("state %d after drag", b.State)
+	}
+}

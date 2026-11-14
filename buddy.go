@@ -145,6 +145,7 @@ const (
 	Drag
 	Air
 	Sleep
+	Busy // doing an activity
 )
 
 const (
@@ -154,7 +155,9 @@ const (
 
 type particle struct {
 	x, y, vx, vy, life, max float64
-	kind                    int // 0 heart, 1 Z, 2 sparkle
+	kind                    int // see the particle drawing code in Draw
+	col                     uint32
+	g                       float64
 }
 
 type Buddy struct {
@@ -164,6 +167,9 @@ type Buddy struct {
 	Paused     bool   // e.g. while the right-click menu is open
 	leap       bool
 	leapArea   int
+	act        *Act
+	actT       float64
+	lastAct    int
 	X, Y       float64 // feet centre in screen pixels
 	VX, VY     float64
 	State      int
@@ -313,7 +319,13 @@ func (b *Buddy) BodyRect() (x0, y0, x1, y1 int) {
 
 func (b *Buddy) Hush() { b.text = "" }
 
+// sayHook lets tests see everything the buddy says.
+var sayHook func(string)
+
 func (b *Buddy) Say(s string) {
+	if sayHook != nil {
+		sayHook(s)
+	}
 	b.text = strings.ToUpper(s)
 	b.textAge = 0
 	b.textDur = 2.5 + float64(len(s))*0.07
@@ -514,7 +526,7 @@ func (b *Buddy) spawn(kind, n int) {
 
 // Mouse input. Positions are screen pixels.
 func (b *Buddy) Down(cx, cy float64) {
-	b.State, b.leap = Drag, false
+	b.State, b.leap, b.act = Drag, false, nil
 	b.offX, b.offY = b.X-cx, b.Y-cy
 	b.moved, b.VX, b.VY = 0, 0, 0
 }
@@ -674,11 +686,11 @@ func (b *Buddy) Update(dt, cx, cy, userIdle float64) {
 			b.State, b.zT, b.text = Sleep, 0.5, ""
 		case !away:
 			if b.nextAct -= dt; b.nextAct < 0 {
-				b.nextAct = 25 + rand.Float64()*45
-				switch rand.Intn(12) {
-				case 0, 1, 2, 3:
+				b.nextAct = 18 + rand.Float64()*35
+				switch r := rand.Intn(20); r {
+				case 12, 13:
 					b.Hop(300)
-				case 4, 5, 6:
+				case 14, 15:
 					dir := 1.0
 					if b.HomeRight {
 						dir = -1
@@ -686,7 +698,7 @@ func (b *Buddy) Update(dt, cx, cy, userIdle float64) {
 					to := home + dir*(60+rand.Float64()*200)*S
 					b.walkTo = math.Max(cur.L+half, math.Min(cur.R-half, to))
 					b.State, b.awayWait = Walk, 4
-				case 7:
+				case 16:
 					if len(b.Areas) < 2 {
 						b.Quip()
 						break
@@ -696,10 +708,20 @@ func (b *Buddy) Update(dt, cx, cy, userIdle float64) {
 					b.LeapTo(a.L+100*S+rand.Float64()*math.Max(0, a.R-a.L-200*S), a.B)
 					b.Say(pick(visitLines))
 					b.awayWait = 6
-				default:
+				case 17, 18, 19:
 					b.Quip()
+				default:
+					b.StartActivity(-1)
 				}
 			}
+		}
+	case Busy:
+		b.actT += dt
+		if b.act.Emit != nil {
+			b.act.Emit(b, b.actT, dt)
+		}
+		if b.actT >= b.act.Dur {
+			b.State, b.act, b.idleT = Idle, nil, 0
 		}
 	case Sleep:
 		if b.zT -= dt; b.zT < 0 {
@@ -713,7 +735,7 @@ func (b *Buddy) Update(dt, cx, cy, userIdle float64) {
 		}
 	}
 	// stay on a screen if the layout changed under us
-	if b.State == Idle || b.State == Walk || b.State == Sleep {
+	if b.State == Idle || b.State == Walk || b.State == Sleep || b.State == Busy {
 		a := b.Areas[b.areaAt(b.X, b.Y)]
 		b.X = math.Max(a.L+half, math.Min(a.R-half, b.X))
 		if b.Y > a.B {
@@ -733,6 +755,10 @@ func (b *Buddy) Update(dt, cx, cy, userIdle float64) {
 		p.life -= dt
 		if p.kind == 2 {
 			p.vy += 500 * S * dt
+		}
+		p.vy += p.g * dt
+		if p.kind == 4 || p.kind == 6 || p.kind == 10 {
+			p.x += math.Sin(p.life*5+p.max*13) * 10 * S * dt
 		}
 		if p.kind == 0 {
 			p.vx = math.Sin(p.life*6+p.max*7) * 14 * S
@@ -809,6 +835,20 @@ func (b *Buddy) Draw(c *Canvas) {
 	Sf := float64(S)
 	ax, ay, right := b.anchor()
 	P := 4.0 * Sf
+	dir := 1.0
+	if right {
+		dir = -1
+	}
+	d := &dc{c: c, u: 2 * Sf, ax: float64(ax), ay: float64(ay), dir: dir}
+	var act *Act
+	pz := pose{}
+	if b.State == Busy && b.act != nil {
+		act = b.act
+		if act.Pose != nil {
+			act.Pose(b.actT, &pz)
+		}
+	}
+	bx, by := float64(ax)+dir*pz.ox*2*Sf, float64(ay)+pz.oy*2*Sf
 
 	// squash & stretch
 	sq := b.squash
@@ -819,17 +859,18 @@ func (b *Buddy) Draw(c *Canvas) {
 	} else {
 		sq += 0.025 * math.Sin(b.t*2.6)
 	}
+	sq += pz.sq
 	sx, sy := 1+sq*0.8, 1-sq
 	cell := func(fx, fy, fw, fh float64, col uint32) {
-		x0 := int(math.Round(float64(ax) + (fx-8)*P*sx))
-		x1 := int(math.Round(float64(ax) + (fx+fw-8)*P*sx))
-		y0 := int(math.Round(float64(ay) - (14-fy)*P*sy))
-		y1 := int(math.Round(float64(ay) - (14-fy-fh)*P*sy))
+		x0 := int(math.Round(bx + (fx-8)*P*sx))
+		x1 := int(math.Round(bx + (fx+fw-8)*P*sx))
+		y0 := int(math.Round(by - (14-fy)*P*sy))
+		y1 := int(math.Round(by - (14-fy-fh)*P*sy))
 		c.Rect(x0, y0, x1-x0, y1-y0, col)
 	}
 
 	// ground shadow
-	if h := b.cur().B - b.Y; h < 60*Sf {
+	if h := b.cur().B - b.Y; h < 60*Sf && !pz.noShadow {
 		f := 1 - h/(60*Sf)
 		w := int(26 * Sf * (0.5 + 0.5*f) * sx)
 		a := uint32(70 * f)
@@ -854,9 +895,13 @@ func (b *Buddy) Draw(c *Canvas) {
 		pil(-1.6, 0.2, 19.2, 8, 0xFFFDF8EE, 0xFFFFFFFF)   // cream pillow on top
 	}
 
+	if act != nil && act.Back != nil {
+		act.Back(d, b.actT)
+	}
+
 	// legs animation
 	step := -1
-	if b.State == Walk {
+	if b.State == Walk || pz.walk {
 		step = int(b.t*9) & 1
 	}
 	filled := func(x, y int) bool {
@@ -917,10 +962,31 @@ func (b *Buddy) Draw(c *Canvas) {
 
 	// eyes
 	fo := b.face * 0.8
-	for _, exx := range []float64{3 + fo, 10 + fo} {
+	em := pz.eyes
+	for ei, exx := range []float64{3 + fo, 10 + fo} {
+		outer := (ei == 0) == (dir > 0)
 		switch {
 		case sl > 0.5:
 			// handled by the eye mask below
+		case em == eClosed || em == eWink && outer:
+			cell(exx, 5.4, 3, 0.8, cDark)
+		case em == eHappy:
+			cell(exx, 5.6, 1, 1, cDark)
+			cell(exx+1, 4.6, 1, 1, cDark)
+			cell(exx+2, 5.6, 1, 1, cDark)
+		case em == eDizzy:
+			for _, q := range [][2]float64{{0, 4}, {2, 4}, {1, 5}, {0, 6}, {2, 6}} {
+				cell(exx+q[0], q[1], 1, 1, cDark)
+			}
+		case em == eWide:
+			cell(exx, 4, 3, 3, 0xFFFFFFFF)
+			cell(exx+1+pz.lx*dir*0.6, 5+pz.ly*0.6, 1, 1, cDark)
+		case (em == eLook || em == eWink) && b.blinkT <= 0:
+			cell(exx, 4, 3, 3, 0xFFFFFFFF)
+			px := exx + 0.5 + pz.lx*dir*0.9
+			py := 4.5 + pz.ly*0.9
+			cell(px, py, 2, 2, cDark)
+			cell(px+0.2, py+0.2, 0.7, 0.7, 0xFFFFFFFF)
 		case b.State == Sleep || b.blinkT > 0:
 			cell(exx, 5.4, 3, 0.8, cDark)
 		case b.happy > 0:
@@ -949,6 +1015,23 @@ func (b *Buddy) Draw(c *Canvas) {
 	}
 	// mouth
 	switch {
+	case pz.mouth == mHide:
+	case pz.mouth == mO:
+		cell(7.25+fo, 7.5, 1.5, 1.5, cDark)
+	case pz.mouth == mBig:
+		cell(6.5+fo, 7.3, 3, 2, cDark)
+		cell(7+fo, 8.4, 2, 0.9, 0xFFE85D75)
+	case pz.mouth == mSmile:
+		cell(6.5+fo, 7.6, 3, 1.3, cDark)
+		cell(7+fo, 8.2, 2, 0.7, 0xFFE85D75)
+	case pz.mouth == mFlat:
+		cell(6.5+fo, 8, 3, 0.5, cDark)
+	case pz.mouth == mChew:
+		if int(b.t*7)&1 == 0 {
+			cell(7+fo, 7.7, 2, 1.2, cDark)
+		} else {
+			cell(6.8+fo, 8.1, 2.4, 0.5, cDark)
+		}
 	case b.happy > 0:
 		cell(6.5+fo, 7.6, 3, 1.3, cDark)
 		cell(7+fo, 8.2, 2, 0.7, 0xFFE85D75)
@@ -958,6 +1041,15 @@ func (b *Buddy) Draw(c *Canvas) {
 		cell(7.5+fo, 7.3, 1, 0.5+0.4*(1+math.Sin(b.t*1.6)), cDark)
 	default:
 		cell(7+fo, 8, 2, 0.6, cDark)
+	}
+
+	if act != nil {
+		if act.Front != nil {
+			act.Front(d, b.actT)
+		}
+		for _, a := range pz.arms {
+			d.arm(a[0]+pz.ox, a[1]+pz.oy)
+		}
 	}
 
 	// blanket (slides up over the body when falling asleep)
@@ -1004,6 +1096,41 @@ func (b *Buddy) Draw(c *Canvas) {
 			}
 		case 2:
 			c.Rect(x, y, 2*S, 2*S, fade(0xFFFFE08A, f))
+		case 3: // music note
+			for r, row := range []string{"..##", "..#.", "..#.", "###.", "##.."} {
+				for k, ch := range row {
+					if ch == '#' {
+						c.Rect(x+k*S, y+r*S, S, S, fade(p.col, f))
+					}
+				}
+			}
+		case 4: // soap bubble
+			for r, row := range []string{".##.", "#..#", "#..#", ".##."} {
+				for k, ch := range row {
+					if ch == '#' {
+						c.Rect(x+k*S, y+r*S, S, S, fade(0xFFBFEFFF, f))
+					}
+				}
+			}
+			c.Rect(x+S, y+S, S, S, fade(0xFFFFFFFF, f))
+		case 5: // steam / smoke
+			c.Rect(x, y, 2*S, 2*S, fade(p.col, f*0.5))
+		case 6: // confetti
+			c.Rect(x, y, 2*S, S+S*(int(p.life*9)&1), fade(p.col, f))
+		case 7: // rain
+			c.Rect(x, y, S, 3*S, fade(0xFF9CC8FF, f))
+		case 8: // twinkle star
+			c.Rect(x+S, y, S, 3*S, fade(p.col, f))
+			c.Rect(x, y+S, 3*S, S, fade(p.col, f))
+		case 9: // drop
+			c.Rect(x, y, S, 2*S, fade(p.col, f))
+		case 10: // snow
+			c.Rect(x, y, S+S/2, S+S/2, fade(0xFFFFFFFF, f))
+		case 11: // shooting star
+			c.Rect(x, y, 2*S, 2*S, fade(0xFFFFF3C4, f))
+			c.Rect(x+2*S, y-S, 6*S, S, fade(0x80FFD166, f))
+		default: // dot
+			c.Rect(x, y, 2*S, 2*S, fade(p.col, f))
 		}
 	}
 
@@ -1019,7 +1146,8 @@ func (b *Buddy) Draw(c *Canvas) {
 		px := 2 * S
 		w := maxLen*px - px + 14*S
 		h := len(lines)*12*S + 10*S
-		bot := ay - 88*S + int((1-pop)*6*Sf)
+		bot := ay - 88*S + int((1-pop)*6*Sf) + int(math.Min(0, pz.oy)*2*Sf)
+		bot = max(bot, h+2*S) // stay on the canvas when the buddy is up high
 		x := 4 * S
 		if right {
 			x = canvasW*S - 4*S - w

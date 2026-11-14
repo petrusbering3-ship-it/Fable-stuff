@@ -10,6 +10,7 @@ import (
 	"image/color"
 	"image/png"
 	"os"
+	"strings"
 )
 
 func main() {
@@ -20,6 +21,10 @@ func main() {
 	out := "."
 	if len(os.Args) > 1 {
 		out = os.Args[1]
+	}
+	if len(os.Args) > 2 && os.Args[2] == "sheet" {
+		sheet(out)
+		return
 	}
 	shot := func(name string) {
 		b.Draw(c)
@@ -71,4 +76,46 @@ func main() {
 	shot("6_sleeping")
 	run(0.6, 300, 300, 0)
 	shot("7_wake")
+}
+
+// sheet renders every activity at three moments into one contact sheet.
+func sheet(out string) {
+	const S, cols = 1, 6
+	cw, ch := canvasW*S, canvasH*S
+	rows := (len(acts) + cols - 1) / cols
+	shotsPer := []float64{0.3, 0.5, 0.8}
+	for si, frac := range shotsPer {
+		img := image.NewRGBA(image.Rect(0, 0, cols*cw, rows*ch))
+		for i, a := range acts {
+			b := NewBuddy(S, []Area{{0, 0, 1920, 1040, true}}, -1, true)
+			b.nextAct = 1e9
+			for t := 0.0; t < 3; t += 1.0 / 60 {
+				b.Update(1.0/60, 900, 500, 0)
+			}
+			b.StartActivity(i)
+			for t := 0.0; t < a.Dur*frac; t += 1.0 / 60 {
+				b.Update(1.0/60, 900, 500, 0)
+			}
+			c := &Canvas{W: cw, H: ch}
+			c.Pix = make([]byte, cw*ch*4)
+			b.Draw(c)
+			c.text(2, 2, 1, strings.ToUpper(a.Name), 0xFFFFFFFF)
+			ox, oy := (i%cols)*cw, (i/cols)*ch
+			for y := 0; y < ch; y++ {
+				for x := 0; x < cw; x++ {
+					k := (y*cw + x) * 4
+					al := uint32(c.Pix[k+3])
+					bg := uint32(0x40)
+					if ((x/8)+(y/8))&1 == 0 {
+						bg = 0x50
+					}
+					m := func(v byte) uint8 { return uint8(uint32(v) + bg*(255-al)/255) }
+					img.SetRGBA(ox+x, oy+y, color.RGBA{m(c.Pix[k+2]), m(c.Pix[k+1]), m(c.Pix[k]), 255})
+				}
+			}
+		}
+		f, _ := os.Create(fmt.Sprintf("%s/sheet_%d.png", out, si))
+		png.Encode(f, img)
+		f.Close()
+	}
 }

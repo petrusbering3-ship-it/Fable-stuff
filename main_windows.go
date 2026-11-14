@@ -122,7 +122,7 @@ const (
 	appKey  = `Software\FableBuddy`
 	appName = "FableBuddy"
 
-	idQuip, idJump, idSide, idStartup, idQuit, idScreen = 1, 2, 3, 4, 5, 100
+	idQuip, idJump, idSide, idStartup, idQuit, idFun, idScreen, idAct = 1, 2, 3, 4, 5, 6, 100, 200
 )
 
 func u16(s string) *uint16 { p, _ := syscall.UTF16PtrFromString(s); return p }
@@ -300,6 +300,16 @@ func menu() {
 		pAppendMenu.Call(menu, flags, id, uintptr(unsafe.Pointer(u16(text))))
 	}
 	const checked, grayed, popup, sep = 0x8, 0x1 | 0x2, 0x10, 0x800
+	add(m, idFun, "Do something fun!", 0)
+	acts := mustMenu()
+	for i, a := range buddyActs() {
+		f := uintptr(0)
+		if i > 0 && i%18 == 0 {
+			f = 0x20 // MF_MENUBARBREAK: start a new column
+		}
+		add(acts, uintptr(idAct+i), a, f)
+	}
+	add(m, acts, fmt.Sprintf("Activities (%d)", len(buddyActs())), popup)
 	add(m, idQuip, "Say something", 0)
 	add(m, idJump, "Jump!", 0)
 	add(m, 0, "", sep)
@@ -310,7 +320,7 @@ func menu() {
 	}
 	n := len(buddy.Areas)
 	if n > 1 {
-		sub, _, _ := pCreatePopupMenu.Call()
+		sub := mustMenu()
 		for i := range buddy.Areas {
 			f := uintptr(0)
 			if i == buddy.HomeIdx() {
@@ -350,6 +360,10 @@ func menu() {
 	pPostMessage.Call(hwnd, 0, 0, 0)
 	pDestroyMenu.Call(m)
 	switch {
+	case cmd == idFun:
+		buddy.StartActivity(-1)
+	case cmd >= idAct && cmd < uintptr(idAct+len(buddyActs())):
+		buddy.StartActivity(int(cmd - idAct))
 	case cmd == idQuip:
 		buddy.Quip()
 	case cmd == idJump:
@@ -372,6 +386,16 @@ func menu() {
 	case cmd == idQuit:
 		pDestroyWindow.Call(hwnd)
 	}
+}
+
+func mustMenu() uintptr { m, _, _ := pCreatePopupMenu.Call(); return m }
+
+func buddyActs() []string {
+	n := make([]string, len(acts))
+	for i, a := range acts {
+		n[i] = a.Name
+	}
+	return n
 }
 
 func wndProc(h uintptr, m uint32, wp, lp uintptr) uintptr {
