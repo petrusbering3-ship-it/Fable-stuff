@@ -6,7 +6,7 @@ A tiny pixel-art desktop companion that lives in the corner of your Windows scre
 
 ## Run it
 
-Download [`dist/FableBuddy.exe`](dist/FableBuddy.exe) and double-click it. That's all — no installer.
+Download `FableBuddy.exe` from the [latest release](../../releases/latest) and double-click it. That's all — no installer.
 
 - It sits on top of your taskbar in the bottom-right corner, always on top.
 - It registers itself to **start with Windows** on first run (toggle it in the right-click menu).
@@ -33,10 +33,8 @@ One dependency-free Go program (no cgo, no libraries):
 - `main_windows.go` — Win32 shell: a per-pixel-alpha layered window, so there is no window frame and clicks pass through the transparent parts
 - `preview_other.go` — renders test frames to PNG on non-Windows machines
 
-Build it yourself:
+Build it yourself: install [Go](https://go.dev/dl), then double-click `build.bat`. It builds `FableBuddy.exe` and starts it.
 
-```
-GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui" -o dist/FableBuddy.exe .
-```
+To publish a new release, change the number in `VERSION` and push; GitHub Actions builds the exe and attaches it to a release.
 
 Uninstall: right-click → untick *Start with Windows*, Quit, delete the exe.

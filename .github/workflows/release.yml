@@ -1,0 +1,36 @@
+name: Release
+
+# Builds FableBuddy.exe and publishes it as a GitHub release.
+# Runs when the VERSION file changes, or manually from the Actions tab.
+on:
+  push:
+    paths: [VERSION]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: Build
+        run: |
+          go vet .
+          GOOS=windows GOARCH=amd64 go vet .
+          GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui" -o FableBuddy.exe .
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v$(tr -d '[:space:]' < VERSION)"
+          notes="Download FableBuddy.exe below and double-click it. No installer needed. Windows SmartScreen may warn because the exe is unsigned: More info, then Run anyway."
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" FableBuddy.exe --clobber
+          else
+            gh release create "$tag" FableBuddy.exe --target "$GITHUB_SHA" --title "Fable Buddy $tag" --notes "$notes"
+          fi
